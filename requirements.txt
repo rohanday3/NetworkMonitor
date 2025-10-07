@@ -1,0 +1,27 @@
+# Network Monitor Requirements
+
+## Python Dependencies
+pandas>=1.3.0
+matplotlib>=3.3.0
+seaborn>=0.11.0
+numpy>=1.20.0
+
+## System Requirements
+- Python 3.6 or higher
+- Linux operating system
+- Internet connection
+- Ookla Speedtest CLI
+- systemd (for service management)
+
+## Optional Dependencies
+# For enhanced data analysis
+scipy>=1.7.0
+plotly>=5.0.0
+
+## Installation Notes
+# The install.sh script will automatically install:
+# - Ookla Speedtest CLI
+# - Required system packages
+#
+# Python packages can be installed with:
+# pip3 install -r requirements.txt

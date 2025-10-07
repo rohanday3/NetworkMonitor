@@ -1,0 +1,28 @@
+[Unit]
+Description=Network Monitor - Internet Speed and Latency Monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=network-monitor
+Group=network-monitor
+ExecStart=/usr/bin/python3 /opt/network-monitor/network_monitor.py --interval 10
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=network-monitor
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/network-monitor /var/lib/network-monitor
+
+# Environment variables (optional)
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
