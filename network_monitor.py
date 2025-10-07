@@ -53,6 +53,14 @@ class NetworkMonitor:
             "208.67.222.222" # OpenDNS
         ]
 
+        # Server selection settings
+        self.preferred_server_id = None
+        self.server_test_results = {}
+        self.best_server_cache_file = self.data_dir / "best_server.json"
+
+        # Load cached best server if available
+        self._load_best_server_cache()
+
         # Signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -71,7 +79,7 @@ class NetworkMonitor:
                 writer.writerow([
                     'timestamp', 'download_mbps', 'upload_mbps',
                     'ping_ms', 'server_name', 'server_location',
-                    'isp', 'external_ip'
+                    'server_id', 'isp', 'external_ip'
                 ])
 
         # Ping test CSV
@@ -82,6 +90,47 @@ class NetworkMonitor:
                     'timestamp', 'target', 'avg_latency_ms',
                     'min_latency_ms', 'max_latency_ms', 'packet_loss_percent'
                 ])
+
+    def _ensure_csv_has_server_id(self):
+        """Ensure CSV file has server_id column (for backward compatibility)"""
+        try:
+            if not self.speed_csv.exists():
+                return
+
+            # Read first line to check headers
+            with open(self.speed_csv, 'r') as csvfile:
+                first_line = csvfile.readline().strip()
+                headers = first_line.split(',')
+
+                # If server_id is missing, we need to update the file
+                if 'server_id' not in headers:
+                    self.logger.info("Updating CSV file to include server_id column...")
+
+                    # Read all data
+                    csvfile.seek(0)
+                    reader = csv.reader(csvfile)
+                    all_rows = list(reader)
+
+                    # Update header
+                    if all_rows:
+                        all_rows[0] = [
+                            'timestamp', 'download_mbps', 'upload_mbps',
+                            'ping_ms', 'server_name', 'server_location',
+                            'server_id', 'isp', 'external_ip'
+                        ]
+
+                        # Add empty server_id to existing data rows
+                        for i in range(1, len(all_rows)):
+                            if len(all_rows[i]) == 8:  # Old format
+                                all_rows[i].insert(6, '')  # Insert empty server_id
+
+                    # Write updated data back
+                    with open(self.speed_csv, 'w', newline='') as csvfile:
+                        writer = csv.writer(csvfile)
+                        writer.writerows(all_rows)
+
+        except Exception as e:
+            self.logger.warning(f"Could not update CSV format: {e}")
 
     def check_speedtest_cli(self):
         """Check if speedtest CLI is installed"""
@@ -97,20 +146,219 @@ class NetworkMonitor:
         self.logger.error("Speedtest CLI not found. Please install it first.")
         return False
 
-    def run_speedtest(self):
-        """Run internet speed test using Ookla Speedtest CLI"""
+    def _load_best_server_cache(self):
+        """Load cached best server information"""
         try:
-            self.logger.info("Running speed test...")
+            if self.best_server_cache_file.exists():
+                with open(self.best_server_cache_file, 'r') as f:
+                    cache_data = json.load(f)
+                    self.preferred_server_id = cache_data.get('server_id')
+                    self.server_test_results = cache_data.get('test_results', {})
+                    self.logger.info(f"Loaded cached best server: ID {self.preferred_server_id}")
+        except Exception as e:
+            self.logger.warning(f"Could not load server cache: {e}")
 
-            # Run speedtest with JSON output
+    def _save_best_server_cache(self):
+        """Save best server information to cache"""
+        try:
+            cache_data = {
+                'server_id': self.preferred_server_id,
+                'test_results': self.server_test_results,
+                'last_updated': datetime.now().isoformat()
+            }
+            with open(self.best_server_cache_file, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+        except Exception as e:
+            self.logger.warning(f"Could not save server cache: {e}")
+
+    def get_available_servers(self):
+        """Get list of available speedtest servers"""
+        try:
+            self.logger.info("Getting available speedtest servers...")
+
             result = subprocess.run(
-                ['speedtest', '--format=json', '--accept-license', '--accept-gdpr'],
+                ['speedtest', '--servers', '--format=json'],
+                capture_output=True, text=True, timeout=30
+            )
+
+            if result.returncode != 0:
+                self.logger.error(f"Failed to get servers: {result.stderr}")
+                return []
+
+            data = json.loads(result.stdout)
+            servers = data.get('servers', [])
+
+            self.logger.info(f"Found {len(servers)} available servers")
+            return servers
+
+        except subprocess.TimeoutExpired:
+            self.logger.error("Server list request timed out")
+            return []
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse server list: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Error getting servers: {e}")
+            return []
+
+    def test_server_performance(self, server_id, server_name=None):
+        """Test performance of a specific server"""
+        try:
+            if server_name:
+                self.logger.info(f"Testing server: {server_name} (ID: {server_id})")
+            else:
+                self.logger.info(f"Testing server ID: {server_id}")
+
+            result = subprocess.run(
+                ['speedtest', '--server-id', str(server_id), '--format=json',
+                 '--accept-license', '--accept-gdpr'],
                 capture_output=True, text=True, timeout=120
             )
 
             if result.returncode != 0:
-                self.logger.error(f"Speedtest failed: {result.stderr}")
+                self.logger.warning(f"Server {server_id} test failed: {result.stderr}")
                 return None
+
+            data = json.loads(result.stdout)
+
+            # Calculate a performance score based on download speed and ping
+            download_mbps = data['download']['bandwidth'] * 8 / 1_000_000
+            ping_ms = data['ping']['latency']
+
+            # Score formula: prioritize download speed, penalize high ping
+            # Higher score is better
+            score = download_mbps - (ping_ms / 10)
+
+            performance = {
+                'server_id': server_id,
+                'server_name': data['server']['name'],
+                'location': f"{data['server']['location']}, {data['server']['country']}",
+                'distance': data['server']['distance'],
+                'download_mbps': round(download_mbps, 2),
+                'upload_mbps': round(data['upload']['bandwidth'] * 8 / 1_000_000, 2),
+                'ping_ms': round(ping_ms, 2),
+                'score': round(score, 2),
+                'jitter': round(data['ping']['jitter'], 2) if 'jitter' in data['ping'] else 0,
+                'test_time': datetime.now().isoformat()
+            }
+
+            self.logger.info(
+                f"Server {server_id} results - "
+                f"Download: {performance['download_mbps']} Mbps, "
+                f"Ping: {performance['ping_ms']} ms, "
+                f"Score: {performance['score']}"
+            )
+
+            return performance
+
+        except subprocess.TimeoutExpired:
+            self.logger.warning(f"Server {server_id} test timed out")
+            return None
+        except json.JSONDecodeError as e:
+            self.logger.warning(f"Failed to parse results for server {server_id}: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error testing server {server_id}: {e}")
+            return None
+
+    def find_best_server(self, max_servers_to_test=5, force_retest=False):
+        """Find the best performing server by testing multiple servers"""
+
+        if not force_retest and self.preferred_server_id:
+            self.logger.info(f"Using cached best server: {self.preferred_server_id}")
+            return self.preferred_server_id
+
+        self.logger.info("Finding best speedtest server...")
+
+        # Get available servers
+        servers = self.get_available_servers()
+        if not servers:
+            self.logger.error("No servers available")
+            return None
+
+        # Test top servers (closest by distance)
+        servers_to_test = servers[:max_servers_to_test]
+        self.logger.info(f"Testing {len(servers_to_test)} servers for best performance...")
+
+        test_results = []
+
+        for server in servers_to_test:
+            performance = self.test_server_performance(
+                server['id'],
+                server['name']
+            )
+
+            if performance:
+                test_results.append(performance)
+                self.server_test_results[str(server['id'])] = performance
+
+            # Small delay between tests
+            time.sleep(2)
+
+        if not test_results:
+            self.logger.error("No servers responded successfully")
+            return None
+
+        # Sort by score (higher is better)
+        test_results.sort(key=lambda x: x['score'], reverse=True)
+
+        # Log results
+        self.logger.info("Server test results (sorted by performance score):")
+        for i, result in enumerate(test_results):
+            self.logger.info(
+                f"  {i+1}. {result['server_name']} (ID: {result['server_id']}) - "
+                f"Score: {result['score']}, Download: {result['download_mbps']} Mbps, "
+                f"Ping: {result['ping_ms']} ms"
+            )
+
+        # Select best server
+        best_server = test_results[0]
+        self.preferred_server_id = best_server['server_id']
+
+        self.logger.info(
+            f"Best server selected: {best_server['server_name']} "
+            f"(ID: {self.preferred_server_id}) with score {best_server['score']}"
+        )
+
+        # Save to cache
+        self._save_best_server_cache()
+
+        return self.preferred_server_id
+
+    def run_speedtest(self, use_best_server=True):
+        """Run internet speed test using Ookla Speedtest CLI"""
+        try:
+            # Determine which server to use
+            server_id = None
+            if use_best_server:
+                if not self.preferred_server_id:
+                    self.logger.info("No preferred server set, finding best server...")
+                    server_id = self.find_best_server()
+                else:
+                    server_id = self.preferred_server_id
+
+            if server_id:
+                self.logger.info(f"Running speed test with server ID: {server_id}")
+                cmd = ['speedtest', '--server-id', str(server_id), '--format=json',
+                       '--accept-license', '--accept-gdpr']
+            else:
+                self.logger.info("Running speed test with automatic server selection...")
+                cmd = ['speedtest', '--format=json', '--accept-license', '--accept-gdpr']
+
+            # Run speedtest
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+            if result.returncode != 0:
+                self.logger.error(f"Speedtest failed: {result.stderr}")
+                # If specific server failed, try automatic selection as fallback
+                if server_id:
+                    self.logger.info("Retrying with automatic server selection...")
+                    cmd = ['speedtest', '--format=json', '--accept-license', '--accept-gdpr']
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                    if result.returncode != 0:
+                        return None
+                else:
+                    return None
 
             # Parse JSON output
             data = json.loads(result.stdout)
@@ -123,6 +371,7 @@ class NetworkMonitor:
                 'ping_ms': round(data['ping']['latency'], 2),
                 'server_name': data['server']['name'],
                 'server_location': f"{data['server']['location']}, {data['server']['country']}",
+                'server_id': data['server']['id'],
                 'isp': data['isp'],
                 'external_ip': data['interface']['externalIp']
             }
@@ -130,19 +379,21 @@ class NetworkMonitor:
             # Log the results
             self.logger.info(
                 f"Speed test completed - "
+                f"Server: {speed_data['server_name']} (ID: {speed_data['server_id']}), "
                 f"Download: {speed_data['download_mbps']} Mbps, "
                 f"Upload: {speed_data['upload_mbps']} Mbps, "
                 f"Ping: {speed_data['ping_ms']} ms"
             )
 
-            # Save to CSV
+            # Save to CSV (update CSV header to include server_id)
+            self._ensure_csv_has_server_id()
             with open(self.speed_csv, 'a', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow([
                     speed_data['timestamp'], speed_data['download_mbps'],
                     speed_data['upload_mbps'], speed_data['ping_ms'],
                     speed_data['server_name'], speed_data['server_location'],
-                    speed_data['isp'], speed_data['external_ip']
+                    speed_data['server_id'], speed_data['isp'], speed_data['external_ip']
                 ])
 
             return speed_data
@@ -301,6 +552,16 @@ def main():
                        help='Directory for log files')
     parser.add_argument('--data-dir', default='/var/lib/network-monitor',
                        help='Directory for data files')
+    parser.add_argument('--find-best-server', action='store_true',
+                       help='Find and cache the best server, then exit')
+    parser.add_argument('--list-servers', action='store_true',
+                       help='List available servers and exit')
+    parser.add_argument('--server-id', type=int,
+                       help='Use specific server ID for tests')
+    parser.add_argument('--test-servers', type=int, default=5,
+                       help='Number of servers to test when finding best (default: 5)')
+    parser.add_argument('--no-server-optimization', action='store_true',
+                       help='Disable automatic server selection, use speedtest default')
 
     args = parser.parse_args()
 
@@ -311,9 +572,46 @@ def main():
     if not monitor.check_speedtest_cli():
         sys.exit(1)
 
+    # Handle server-related commands
+    if args.list_servers:
+        print("Available Speedtest Servers:")
+        print("=" * 50)
+        servers = monitor.get_available_servers()
+        for server in servers[:20]:  # Show top 20
+            print(f"ID: {server['id']:>6} | {server['name']:<25} | {server['location']}, {server['country']}")
+        print(f"\nShowing top 20 of {len(servers)} available servers")
+        return
+
+    if args.find_best_server:
+        print("Finding best speedtest server...")
+        print("=" * 40)
+        best_server_id = monitor.find_best_server(max_servers_to_test=args.test_servers, force_retest=True)
+        if best_server_id:
+            print(f"\nBest server found and cached: ID {best_server_id}")
+            print("This server will be used for future tests.")
+        else:
+            print("Failed to find best server.")
+        return
+
+    # Set specific server if provided
+    if args.server_id:
+        monitor.preferred_server_id = args.server_id
+        print(f"Using server ID: {args.server_id}")
+
+    # Disable server optimization if requested
+    use_best_server = not args.no_server_optimization
+
     if args.single:
+        if use_best_server and not monitor.preferred_server_id:
+            print("No preferred server set. Finding best server first...")
+            monitor.find_best_server(max_servers_to_test=args.test_servers)
+
         monitor.run_single_test()
     else:
+        if use_best_server and not monitor.preferred_server_id:
+            print("No preferred server set. Finding best server first...")
+            monitor.find_best_server(max_servers_to_test=args.test_servers)
+
         monitor.run_continuous(args.interval)
 
 if __name__ == '__main__':

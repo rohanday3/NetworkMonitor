@@ -1,0 +1,31 @@
+# Network Monitor Requirements - Windows Version
+
+## Python Dependencies
+pandas>=1.3.0
+matplotlib>=3.3.0
+seaborn>=0.11.0
+numpy>=1.20.0
+
+## System Requirements
+- Python 3.7 or higher
+- Windows 10/11 or Windows Server 2016+
+- Internet connection
+- Ookla Speedtest CLI for Windows
+- Administrator privileges (for service installation)
+
+## Optional Dependencies
+# For enhanced data analysis
+scipy>=1.7.0
+plotly>=5.0.0
+
+## Installation Notes
+# The install_windows.bat script will automatically install Python packages
+#
+# Manual installation:
+# pip install pandas matplotlib seaborn numpy
+#
+# Speedtest CLI must be downloaded separately from:
+# https://www.speedtest.net/apps/cli
+#
+# For Windows Service functionality:
+# pywin32>=227
