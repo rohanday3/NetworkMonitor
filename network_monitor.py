@@ -78,8 +78,11 @@ class NetworkMonitor:
                 writer = csv.writer(csvfile)
                 writer.writerow([
                     'timestamp', 'download_mbps', 'upload_mbps',
-                    'ping_ms', 'server_name', 'server_location',
-                    'server_id', 'isp', 'external_ip'
+                    'idle_latency_ms', 'idle_jitter_ms', 'idle_low_ms', 'idle_high_ms',
+                    'download_latency_ms', 'download_jitter_ms', 'download_low_ms', 'download_high_ms',
+                    'upload_latency_ms', 'upload_jitter_ms', 'upload_low_ms', 'upload_high_ms',
+                    'packet_loss_percent', 'download_bytes', 'upload_bytes',
+                    'server_name', 'server_location', 'server_id', 'isp', 'external_ip', 'result_url'
                 ])
 
         # Ping test CSV
@@ -92,7 +95,7 @@ class NetworkMonitor:
                 ])
 
     def _ensure_csv_has_server_id(self):
-        """Ensure CSV file has server_id column (for backward compatibility)"""
+        """Ensure CSV file has all new columns (for backward compatibility)"""
         try:
             if not self.speed_csv.exists():
                 return
@@ -102,10 +105,24 @@ class NetworkMonitor:
                 first_line = csvfile.readline().strip()
                 headers = first_line.split(',')
 
-                # If server_id is missing, we need to update the file
-                if 'server_id' not in headers:
-                    self.logger.info("Updating CSV file to include server_id column...")
+                # Check if we have the new extended format
+                new_headers = [
+                    'timestamp', 'download_mbps', 'upload_mbps',
+                    'idle_latency_ms', 'idle_jitter_ms', 'idle_low_ms', 'idle_high_ms',
+                    'download_latency_ms', 'download_jitter_ms', 'download_low_ms', 'download_high_ms',
+                    'upload_latency_ms', 'upload_jitter_ms', 'upload_low_ms', 'upload_high_ms',
+                    'packet_loss_percent', 'download_bytes', 'upload_bytes',
+                    'server_name', 'server_location', 'server_id', 'isp', 'external_ip', 'result_url'
+                ]
 
+                needs_update = False
+
+                # Check if we need to update to new format
+                if len(headers) < len(new_headers) or 'idle_latency_ms' not in headers:
+                    needs_update = True
+                    self.logger.info("Updating CSV file to include extended metrics...")
+
+                if needs_update:
                     # Read all data
                     csvfile.seek(0)
                     reader = csv.reader(csvfile)
@@ -113,16 +130,14 @@ class NetworkMonitor:
 
                     # Update header
                     if all_rows:
-                        all_rows[0] = [
-                            'timestamp', 'download_mbps', 'upload_mbps',
-                            'ping_ms', 'server_name', 'server_location',
-                            'server_id', 'isp', 'external_ip'
-                        ]
+                        all_rows[0] = new_headers
 
-                        # Add empty server_id to existing data rows
+                        # Extend existing data rows with empty values for new columns
                         for i in range(1, len(all_rows)):
-                            if len(all_rows[i]) == 8:  # Old format
-                                all_rows[i].insert(6, '')  # Insert empty server_id
+                            row = all_rows[i]
+                            # Pad row to new length
+                            while len(row) < len(new_headers):
+                                row.append('')
 
                     # Write updated data back
                     with open(self.speed_csv, 'w', newline='') as csvfile:
@@ -233,7 +248,7 @@ class NetworkMonitor:
                 'server_id': server_id,
                 'server_name': data['server']['name'],
                 'location': f"{data['server']['location']}, {data['server']['country']}",
-                'distance': data['server']['distance'],
+                'distance': data['server'].get('distance', 0),  # Use .get() with default value
                 'download_mbps': round(download_mbps, 2),
                 'upload_mbps': round(data['upload']['bandwidth'] * 8 / 1_000_000, 2),
                 'ping_ms': round(ping_ms, 2),
@@ -363,7 +378,7 @@ class NetworkMonitor:
             # Parse JSON output
             data = json.loads(result.stdout)
 
-            # Extract relevant data
+            # Extract relevant data with enhanced metrics
             speed_data = {
                 'timestamp': datetime.now().isoformat(),
                 'download_mbps': round(data['download']['bandwidth'] * 8 / 1_000_000, 2),
@@ -373,19 +388,35 @@ class NetworkMonitor:
                 'server_location': f"{data['server']['location']}, {data['server']['country']}",
                 'server_id': data['server']['id'],
                 'isp': data['isp'],
-                'external_ip': data['interface']['externalIp']
+                'external_ip': data['interface']['externalIp'],
+                'idle_latency_ms': round(data['ping'].get('latency', 0), 2),
+                'idle_jitter_ms': round(data['ping'].get('jitter', 0), 2),
+                'download_latency_low_ms': round(data['download'].get('latency', {}).get('low', 0), 2),
+                'download_latency_high_ms': round(data['download'].get('latency', {}).get('high', 0), 2),
+                'download_latency_iqm_ms': round(data['download'].get('latency', {}).get('iqm', 0), 2),
+                'download_jitter_ms': round(data['download'].get('latency', {}).get('jitter', 0), 2),
+                'upload_latency_low_ms': round(data['upload'].get('latency', {}).get('low', 0), 2),
+                'upload_latency_high_ms': round(data['upload'].get('latency', {}).get('high', 0), 2),
+                'upload_latency_iqm_ms': round(data['upload'].get('latency', {}).get('iqm', 0), 2),
+                'upload_jitter_ms': round(data['upload'].get('latency', {}).get('jitter', 0), 2),
+                'packet_loss_percent': data.get('packetLoss', 0),
+                'download_bytes': data['download'].get('bytes', 0),
+                'upload_bytes': data['upload'].get('bytes', 0),
+                'result_url': data.get('result', {}).get('url', '')
             }
 
-            # Log the results
+            # Log the results with enhanced metrics
             self.logger.info(
                 f"Speed test completed - "
                 f"Server: {speed_data['server_name']} (ID: {speed_data['server_id']}), "
                 f"Download: {speed_data['download_mbps']} Mbps, "
                 f"Upload: {speed_data['upload_mbps']} Mbps, "
-                f"Ping: {speed_data['ping_ms']} ms"
+                f"Ping: {speed_data['ping_ms']} ms, "
+                f"Jitter: {speed_data['idle_jitter_ms']} ms, "
+                f"Packet Loss: {speed_data['packet_loss_percent']}%"
             )
 
-            # Save to CSV (update CSV header to include server_id)
+            # Save to CSV with all enhanced metrics
             self._ensure_csv_has_server_id()
             with open(self.speed_csv, 'a', newline='') as csvfile:
                 writer = csv.writer(csvfile)
@@ -393,7 +424,14 @@ class NetworkMonitor:
                     speed_data['timestamp'], speed_data['download_mbps'],
                     speed_data['upload_mbps'], speed_data['ping_ms'],
                     speed_data['server_name'], speed_data['server_location'],
-                    speed_data['server_id'], speed_data['isp'], speed_data['external_ip']
+                    speed_data['server_id'], speed_data['isp'], speed_data['external_ip'],
+                    speed_data['idle_latency_ms'], speed_data['idle_jitter_ms'],
+                    speed_data['download_latency_low_ms'], speed_data['download_latency_high_ms'],
+                    speed_data['download_latency_iqm_ms'], speed_data['download_jitter_ms'],
+                    speed_data['upload_latency_low_ms'], speed_data['upload_latency_high_ms'],
+                    speed_data['upload_latency_iqm_ms'], speed_data['upload_jitter_ms'],
+                    speed_data['packet_loss_percent'], speed_data['download_bytes'],
+                    speed_data['upload_bytes'], speed_data['result_url']
                 ])
 
             return speed_data
@@ -509,8 +547,9 @@ class NetworkMonitor:
         """Run a single round of tests"""
         self.logger.info("Starting network monitoring cycle...")
 
-        # Run speed test
-        speed_result = self.run_speedtest()
+        # Run speed test - only use best server if one is already set/cached
+        use_server_optimization = bool(self.preferred_server_id)
+        speed_result = self.run_speedtest(use_best_server=use_server_optimization)
 
         # Run ping tests
         ping_results = self.run_all_ping_tests()
@@ -562,6 +601,8 @@ def main():
                        help='Number of servers to test when finding best (default: 5)')
     parser.add_argument('--no-server-optimization', action='store_true',
                        help='Disable automatic server selection, use speedtest default')
+    parser.add_argument('--set-preferred-server', type=int,
+                       help='Set and cache a preferred server ID without testing')
 
     args = parser.parse_args()
 
@@ -598,20 +639,22 @@ def main():
         monitor.preferred_server_id = args.server_id
         print(f"Using server ID: {args.server_id}")
 
-    # Disable server optimization if requested
-    use_best_server = not args.no_server_optimization
+    # Set and cache preferred server
+    if args.set_preferred_server:
+        monitor.preferred_server_id = args.set_preferred_server
+        monitor._save_best_server_cache()
+        print(f"Preferred server set and cached: ID {args.set_preferred_server}")
+        print("This server will be used for future tests.")
+        return
+
+    # Only use server optimization if explicitly enabled or if server is already cached
+    use_best_server = not args.no_server_optimization and (args.server_id or monitor.preferred_server_id or args.find_best_server)
 
     if args.single:
-        if use_best_server and not monitor.preferred_server_id:
-            print("No preferred server set. Finding best server first...")
-            monitor.find_best_server(max_servers_to_test=args.test_servers)
-
+        # Only find best server if explicitly requested, not automatically
         monitor.run_single_test()
     else:
-        if use_best_server and not monitor.preferred_server_id:
-            print("No preferred server set. Finding best server first...")
-            monitor.find_best_server(max_servers_to_test=args.test_servers)
-
+        # Only find best server if explicitly requested, not automatically
         monitor.run_continuous(args.interval)
 
 if __name__ == '__main__':

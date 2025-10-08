@@ -93,15 +93,21 @@ class NetworkMonitorWindows:
 
     def _init_csv_files(self):
         """Initialize CSV files with headers if they don't exist"""
-        # Speed test CSV
+        # Speed test CSV with enhanced metrics
         if not self.speed_csv.exists():
             with open(self.speed_csv, 'w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow([
-                    'timestamp', 'download_mbps', 'upload_mbps',
-                    'ping_ms', 'server_name', 'server_location',
-                    'isp', 'external_ip'
+                    'timestamp', 'download_mbps', 'upload_mbps', 'ping_ms',
+                    'server_name', 'server_location', 'server_id', 'isp', 'external_ip',
+                    'idle_latency_ms', 'idle_jitter_ms',
+                    'download_latency_low_ms', 'download_latency_high_ms', 'download_latency_iqm_ms', 'download_jitter_ms',
+                    'upload_latency_low_ms', 'upload_latency_high_ms', 'upload_latency_iqm_ms', 'upload_jitter_ms',
+                    'packet_loss_percent', 'download_bytes', 'upload_bytes', 'result_url'
                 ])
+        else:
+            # Check if CSV needs to be migrated to new format
+            self._migrate_csv_if_needed()
 
         # Ping test CSV
         if not self.ping_csv.exists():
@@ -111,6 +117,55 @@ class NetworkMonitorWindows:
                     'timestamp', 'target', 'avg_latency_ms',
                     'min_latency_ms', 'max_latency_ms', 'packet_loss_percent'
                 ])
+
+    def _migrate_csv_if_needed(self):
+        """Migrate old CSV format to new enhanced format if needed"""
+        try:
+            # Read the first line to check current format
+            with open(self.speed_csv, 'r', newline='', encoding='utf-8') as csvfile:
+                reader = csv.reader(csvfile)
+                header = next(reader)
+
+                # Check if we need to migrate (old format has 8 columns, new has 23)
+                if len(header) < 23:
+                    self.logger.info("Migrating CSV to enhanced format...")
+
+                    # Read all existing data
+                    csvfile.seek(0)
+                    reader = csv.reader(csvfile)
+                    rows = list(reader)
+
+                    # Create backup
+                    backup_file = self.speed_csv.with_suffix('.bak')
+                    with open(backup_file, 'w', newline='', encoding='utf-8') as backup:
+                        writer = csv.writer(backup)
+                        writer.writerows(rows)
+
+                    # Write new format
+                    with open(self.speed_csv, 'w', newline='', encoding='utf-8') as csvfile:
+                        writer = csv.writer(csvfile)
+                        # Write new header
+                        writer.writerow([
+                            'timestamp', 'download_mbps', 'upload_mbps', 'ping_ms',
+                            'server_name', 'server_location', 'server_id', 'isp', 'external_ip',
+                            'idle_latency_ms', 'idle_jitter_ms',
+                            'download_latency_low_ms', 'download_latency_high_ms', 'download_latency_iqm_ms', 'download_jitter_ms',
+                            'upload_latency_low_ms', 'upload_latency_high_ms', 'upload_latency_iqm_ms', 'upload_jitter_ms',
+                            'packet_loss_percent', 'download_bytes', 'upload_bytes', 'result_url'
+                        ])
+
+                        # Migrate existing data (skip header)
+                        for row in rows[1:]:
+                            if len(row) >= 8:  # Ensure we have at least the old format
+                                # Fill missing columns with default values
+                                migrated_row = row[:9] if len(row) >= 9 else row + ['']  # Add server_id if missing
+                                migrated_row.extend([0] * 14)  # Add all new metric columns with default values
+                                writer.writerow(migrated_row)
+
+                    self.logger.info(f"CSV migration complete. Backup saved as {backup_file}")
+
+        except Exception as e:
+            self.logger.error(f"Error migrating CSV: {e}")
 
     def check_speedtest_cli(self):
         """Check if speedtest CLI is installed"""
@@ -153,7 +208,7 @@ class NetworkMonitorWindows:
             # Parse JSON output
             data = json.loads(result.stdout)
 
-            # Extract relevant data
+            # Extract relevant data with enhanced metrics
             speed_data = {
                 'timestamp': datetime.now().isoformat(),
                 'download_mbps': round(data['download']['bandwidth'] * 8 / 1_000_000, 2),
@@ -161,26 +216,51 @@ class NetworkMonitorWindows:
                 'ping_ms': round(data['ping']['latency'], 2),
                 'server_name': data['server']['name'],
                 'server_location': f"{data['server']['location']}, {data['server']['country']}",
+                'server_id': data['server']['id'],
                 'isp': data['isp'],
-                'external_ip': data['interface']['externalIp']
+                'external_ip': data['interface']['externalIp'],
+                'idle_latency_ms': round(data['ping'].get('latency', 0), 2),
+                'idle_jitter_ms': round(data['ping'].get('jitter', 0), 2),
+                'download_latency_low_ms': round(data['download'].get('latency', {}).get('low', 0), 2),
+                'download_latency_high_ms': round(data['download'].get('latency', {}).get('high', 0), 2),
+                'download_latency_iqm_ms': round(data['download'].get('latency', {}).get('iqm', 0), 2),
+                'download_jitter_ms': round(data['download'].get('latency', {}).get('jitter', 0), 2),
+                'upload_latency_low_ms': round(data['upload'].get('latency', {}).get('low', 0), 2),
+                'upload_latency_high_ms': round(data['upload'].get('latency', {}).get('high', 0), 2),
+                'upload_latency_iqm_ms': round(data['upload'].get('latency', {}).get('iqm', 0), 2),
+                'upload_jitter_ms': round(data['upload'].get('latency', {}).get('jitter', 0), 2),
+                'packet_loss_percent': data.get('packetLoss', 0),
+                'download_bytes': data['download'].get('bytes', 0),
+                'upload_bytes': data['upload'].get('bytes', 0),
+                'result_url': data.get('result', {}).get('url', '')
             }
 
-            # Log the results
+            # Log the results with enhanced metrics
             self.logger.info(
                 f"Speed test completed - "
+                f"Server: {speed_data['server_name']} (ID: {speed_data['server_id']}), "
                 f"Download: {speed_data['download_mbps']} Mbps, "
                 f"Upload: {speed_data['upload_mbps']} Mbps, "
-                f"Ping: {speed_data['ping_ms']} ms"
+                f"Ping: {speed_data['ping_ms']} ms, "
+                f"Jitter: {speed_data['idle_jitter_ms']} ms, "
+                f"Packet Loss: {speed_data['packet_loss_percent']}%"
             )
 
-            # Save to CSV
+            # Save to CSV with all enhanced metrics
             with open(self.speed_csv, 'a', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow([
                     speed_data['timestamp'], speed_data['download_mbps'],
                     speed_data['upload_mbps'], speed_data['ping_ms'],
                     speed_data['server_name'], speed_data['server_location'],
-                    speed_data['isp'], speed_data['external_ip']
+                    speed_data['server_id'], speed_data['isp'], speed_data['external_ip'],
+                    speed_data['idle_latency_ms'], speed_data['idle_jitter_ms'],
+                    speed_data['download_latency_low_ms'], speed_data['download_latency_high_ms'],
+                    speed_data['download_latency_iqm_ms'], speed_data['download_jitter_ms'],
+                    speed_data['upload_latency_low_ms'], speed_data['upload_latency_high_ms'],
+                    speed_data['upload_latency_iqm_ms'], speed_data['upload_jitter_ms'],
+                    speed_data['packet_loss_percent'], speed_data['download_bytes'],
+                    speed_data['upload_bytes'], speed_data['result_url']
                 ])
 
             return speed_data

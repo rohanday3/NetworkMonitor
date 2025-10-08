@@ -244,7 +244,8 @@ class NetworkDashboardHandler(BaseHTTPRequestHandler):
             with open(speed_csv, 'r') as file:
                 reader = csv.DictReader(file)
                 for row in reader:
-                    data.append({
+                    # Handle both old and new CSV formats
+                    entry = {
                         'timestamp': row['timestamp'],
                         'download_mbps': float(row['download_mbps']),
                         'upload_mbps': float(row['upload_mbps']),
@@ -252,7 +253,30 @@ class NetworkDashboardHandler(BaseHTTPRequestHandler):
                         'server_name': row['server_name'],
                         'server_location': row['server_location'],
                         'isp': row['isp']
-                    })
+                    }
+
+                    # Add enhanced metrics if available
+                    if 'external_ip' in row:
+                        entry['external_ip'] = row['external_ip']
+                    if 'server_id' in row:
+                        entry['server_id'] = row['server_id']
+                    if 'idle_jitter_ms' in row:
+                        entry['idle_jitter_ms'] = float(row.get('idle_jitter_ms', 0))
+                    if 'packet_loss_percent' in row:
+                        entry['packet_loss_percent'] = float(row.get('packet_loss_percent', 0))
+                    if 'download_jitter_ms' in row:
+                        entry['download_jitter_ms'] = float(row.get('download_jitter_ms', 0))
+                    if 'upload_jitter_ms' in row:
+                        entry['upload_jitter_ms'] = float(row.get('upload_jitter_ms', 0))
+                    if 'download_bytes' in row:
+                        entry['download_bytes'] = int(row.get('download_bytes', 0))
+                    if 'upload_bytes' in row:
+                        entry['upload_bytes'] = int(row.get('upload_bytes', 0))
+                    if 'result_url' in row:
+                        entry['result_url'] = row.get('result_url', '')
+
+                    data.append(entry)
+
         except (FileNotFoundError, ValueError):
             pass
 
