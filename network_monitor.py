@@ -77,12 +77,12 @@ class NetworkMonitor:
             with open(self.speed_csv, 'w', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow([
-                    'timestamp', 'download_mbps', 'upload_mbps',
-                    'idle_latency_ms', 'idle_jitter_ms', 'idle_low_ms', 'idle_high_ms',
-                    'download_latency_ms', 'download_jitter_ms', 'download_low_ms', 'download_high_ms',
-                    'upload_latency_ms', 'upload_jitter_ms', 'upload_low_ms', 'upload_high_ms',
-                    'packet_loss_percent', 'download_bytes', 'upload_bytes',
-                    'server_name', 'server_location', 'server_id', 'isp', 'external_ip', 'result_url'
+                    'timestamp', 'download_mbps', 'upload_mbps', 'ping_ms',
+                    'server_name', 'server_location', 'server_id', 'isp', 'external_ip',
+                    'idle_latency_ms', 'idle_jitter_ms', 'download_latency_low_ms', 'download_latency_high_ms',
+                    'download_latency_iqm_ms', 'download_jitter_ms', 'upload_latency_low_ms', 'upload_latency_high_ms',
+                    'upload_latency_iqm_ms', 'upload_jitter_ms', 'packet_loss_percent', 'download_bytes',
+                    'upload_bytes', 'result_url'
                 ])
 
         # Ping test CSV
@@ -107,12 +107,12 @@ class NetworkMonitor:
 
                 # Check if we have the new extended format
                 new_headers = [
-                    'timestamp', 'download_mbps', 'upload_mbps',
-                    'idle_latency_ms', 'idle_jitter_ms', 'idle_low_ms', 'idle_high_ms',
-                    'download_latency_ms', 'download_jitter_ms', 'download_low_ms', 'download_high_ms',
-                    'upload_latency_ms', 'upload_jitter_ms', 'upload_low_ms', 'upload_high_ms',
-                    'packet_loss_percent', 'download_bytes', 'upload_bytes',
-                    'server_name', 'server_location', 'server_id', 'isp', 'external_ip', 'result_url'
+                    'timestamp', 'download_mbps', 'upload_mbps', 'ping_ms',
+                    'server_name', 'server_location', 'server_id', 'isp', 'external_ip',
+                    'idle_latency_ms', 'idle_jitter_ms', 'download_latency_low_ms', 'download_latency_high_ms',
+                    'download_latency_iqm_ms', 'download_jitter_ms', 'upload_latency_low_ms', 'upload_latency_high_ms',
+                    'upload_latency_iqm_ms', 'upload_jitter_ms', 'packet_loss_percent', 'download_bytes',
+                    'upload_bytes', 'result_url'
                 ]
 
                 needs_update = False
